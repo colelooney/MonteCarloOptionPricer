@@ -27,6 +27,27 @@ double MonteCarloPrice(Asset asset, double r, double K, double T, int N){
     return discounted_return;
 }
 
+double MonteCarloPriceWithAntithetic(Asset asset, double r, double K, double T, int N){
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    std::normal_distribution<double> z_dist(0.0, 1.0);
+
+    double average_payoff = 0;
+    for (int i = 0; i < N; i++){
+        double Z = z_dist(gen);
+        double S_t = asset.S0 * exp((r - 0.5 * asset.sigma*asset.sigma)*T + asset.sigma*sqrt(T)*Z);
+        double payoff = std::max(S_t-K,0.0);
+        average_payoff += payoff;
+        // compute antithetic
+        S_t = asset.S0 * exp((r - 0.5 * asset.sigma*asset.sigma)*T - asset.sigma*sqrt(T)*Z);
+        payoff = std::max(S_t-K,0.0);
+        average_payoff += payoff;
+    }
+    average_payoff /= 2*N;
+    double discounted_return = average_payoff * exp(-r*T);
+    return discounted_return;
+}
+
 double BlackScholesPrice(Asset asset, double r, double K, double T){
     double d1= (log(asset.S0/K) +(r+0.5*asset.sigma*asset.sigma)*T)/(asset.sigma*sqrt(T));
     double d2 = d1 - asset.sigma*sqrt(T);
@@ -45,6 +66,10 @@ int main(){
     
     double monte_carlo_price = MonteCarloPrice(asset,r,K,T,N);
     double closed_form_price = BlackScholesPrice(asset,r,K,T);
+    double antithetic_price = MonteCarloPriceWithAntithetic(asset,r,K,T,N); //compute N pairs
+    double antithetic_price_half = MonteCarloPriceWithAntithetic(asset,r,K,T,N/2); //compute N prices
     std::cout << "Monte Carlo Price " << monte_carlo_price << std::endl;
     std::cout << "Closed form Price " << closed_form_price << std::endl;
+    std::cout << "Monte Carlo Anthetic N Pairs Price " << antithetic_price << std::endl;
+    std::cout << "Monte Carlo Anthetic N Prices Price " << antithetic_price_half << std::endl;
 }
