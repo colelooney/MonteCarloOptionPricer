@@ -3,20 +3,69 @@
 #include <cmath>
 #include <algorithm>
 
-class Asset{ // hold immutable asset data
-    public: // will be used in other classes
+class Asset{ // immutable market data for the underlying
+    public: 
         Asset(double S0,double sigma):S0(S0),sigma(sigma){}
         const double S0;
         const double sigma;
 };
 
-struct pricingResult{
-    pricingResult(double price, double error):price(price),error(error){}
-    double price;
-    double error;
+class Option{ // immutable data for contract itself
+    public:
+        Option(double K, double T) :K(K),T(T){}
+        double payoff(double terminalPrice) const {
+            return std::max(terminalPrice - K,0.0);
+        }
+        const double K;
+        const double T;
 };
 
-pricingResult MonteCarloPrice(Asset asset, double r, double K, double T, int N){
+struct PricingResult{
+    PricingResult(double price, double standardError):price(price),standardError(standardError){}
+    double price;
+    double standardError;
+};
+
+class MonteCarloEngine{ // Simulation Process
+    public:
+        MonteCarloEngine(double r, int numPairs, unsigned int seed = std::random_device{}()): r(r), numPairs(numPairs), gen(seed){}
+        PricingResult price(const Asset& asset, const Option& option) const {
+            std::normal_distribution<double> z_dist(0.0, 1.0);
+
+            double sumPairAverage = 0.0;
+            double sumPairAverageSquared = 0.0;
+
+            for (int i = 0; i < numPairs; i++) {
+                double Z = z_dist(gen);
+
+                double S_up   = asset.S0 * exp((r - 0.5*asset.sigma*asset.sigma)*option.T + asset.sigma*sqrt(option.T)*Z);
+                double S_down = asset.S0 * exp((r - 0.5*asset.sigma*asset.sigma)*option.T - asset.sigma*sqrt(option.T)*Z);
+
+                double pairAverage = (option.payoff(S_up) + option.payoff(S_down)) / 2.0;
+                sumPairAverage += pairAverage;
+                sumPairAverageSquared += pairAverage * pairAverage;
+            }
+
+            double meanPairAverage = sumPairAverage / numPairs;
+            double meanPairAverageSquared = sumPairAverageSquared / numPairs;
+            double payoffVariance = meanPairAverageSquared - meanPairAverage * meanPairAverage;
+
+            double discount = discountFactor(option.T);
+            double price = meanPairAverage * discount;
+            double standardError = sqrt(payoffVariance / numPairs) * discount;
+
+            return PricingResult(price, standardError);
+        }
+
+    private:
+        double r;
+        int numPairs;
+        mutable std::mt19937_64 gen;
+
+        double discountFactor(double T) const {return exp(-r*T);}
+};
+
+PricingResult MonteCarloPrice(Asset asset, double r, double K, double T, int N){
     std::random_device rd;
     std::mt19937_64 gen(rd());
     std::normal_distribution<double> z_dist(0.0, 1.0);
@@ -37,10 +86,10 @@ pricingResult MonteCarloPrice(Asset asset, double r, double K, double T, int N){
     double variance = average_payoff_squared - average_payoff * average_payoff;
     double standard_error = sqrt(variance) / sqrt(N);
     double standard_error_discounted = standard_error * exp(-r*T);
-    return pricingResult(price,standard_error_discounted);
+    return PricingResult(price,standard_error_discounted);
 }
 
-pricingResult MonteCarloPriceWithAntithetic(Asset asset, double r, double K, double T, int N){
+PricingResult MonteCarloPriceWithAntithetic(Asset asset, double r, double K, double T, int N){
     std::random_device rd;
     std::mt19937_64 gen(rd());
     std::normal_distribution<double> z_dist(0.0, 1.0);
@@ -64,7 +113,7 @@ pricingResult MonteCarloPriceWithAntithetic(Asset asset, double r, double K, dou
     double variance = average_payoff_squared - average_payoff * average_payoff;
     double standard_error = sqrt(variance) / sqrt(N);
     double standard_error_discounted = standard_error * exp(-r*T);
-    return pricingResult(price,standard_error_discounted);
+    return PricingResult(price,standard_error_discounted);
 }
 
 double BlackScholesPrice(Asset asset, double r, double K, double T){
@@ -80,19 +129,19 @@ int main(){
     double r = 0.05;
     double sigma = 0.2;
     double T = 1;
-    int N = 100000;
+    int N = 10000000;
     Asset asset(S0,sigma);
-    
-    double monte_carlo_price = MonteCarloPrice(asset,r,K,T,N).price;
-    double monte_carlo_error = MonteCarloPrice(asset,r,K,T,N).error;
-    double closed_form_price = BlackScholesPrice(asset,r,K,T);
-    double antithetic_price = MonteCarloPriceWithAntithetic(asset,r,K,T,N).price; //compute N pairs
-    double antithetic_price_half = MonteCarloPriceWithAntithetic(asset,r,K,T,N/2).price; //compute N prices
-    double antithetic_error = MonteCarloPriceWithAntithetic(asset,r,K,T,N).error; //compute N pairs
-    double antithetic_error_half = MonteCarloPriceWithAntithetic(asset,r,K,T,N/2).error; //compute N prices
+    Option option(K,T);
 
-    std::cout << "Monte Carlo Price " << monte_carlo_price << ", error: "  <<(monte_carlo_error) << std::endl;
-    std::cout << "Closed form Price " << closed_form_price << std::endl;
-    std::cout << "Monte Carlo Anthetic N Pairs Price " << antithetic_price << ", error: " << (antithetic_error) << std::endl;
-    std::cout << "Monte Carlo Anthetic N Prices Price " << antithetic_price_half << ", error: "  << (antithetic_error_half) << std::endl;
+    double closedFormPrice = BlackScholesPrice(asset,r,K,T);
+
+    MonteCarloEngine engine(r,N);
+    PricingResult monteCarloResult = engine.price(asset,option);
+
+    double monteCarloPrice = monteCarloResult.price;
+    double monteCarloError = monteCarloResult.standardError;
+    
+    std::cout << "Closed Form Price " << closedFormPrice << std::endl;
+    std::cout << "Monte Carlo Price " << monteCarloPrice << std::endl;
+    std::cout << "Monte Carlo Error " << monteCarloError << std::endl;
 }
