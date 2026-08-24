@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <string>
 
 class Asset{ // immutable market data for the underlying
     public: 
@@ -72,24 +73,50 @@ double BlackScholesPrice(Asset asset, double r, double K, double T){
     return C;
 }
 
-int main(){
+struct SimulationParams {
     double S0 = 100;
     double K = 100;
     double r = 0.05;
     double sigma = 0.2;
     double T = 1;
     int N = 10000000;
-    Asset asset(S0,sigma);
-    Option option(K,T);
+};
 
-    double closedFormPrice = BlackScholesPrice(asset,r,K,T);
+SimulationParams parseArgs(int argc, char* argv[]) {
+    SimulationParams params;
+    for (int i = 1; i < argc; i++) {
+        std::string flag = argv[i];
+        if (i + 1 >= argc) {
+            std::cerr << "Missing value for flag " << flag << std::endl;
+            break;
+        }
+        std::string value = argv[++i];
 
-    MonteCarloEngine engine(r,N);
-    PricingResult monteCarloResult = engine.price(asset,option);
+        if      (flag == "--spot")     params.S0    = std::stod(value);
+        else if (flag == "--strike")   params.K     = std::stod(value);
+        else if (flag == "--rate")     params.r     = std::stod(value);
+        else if (flag == "--vol")      params.sigma = std::stod(value);
+        else if (flag == "--maturity") params.T     = std::stod(value);
+        else if (flag == "--trials")   params.N     = std::stoi(value);
+        else std::cerr << "Unknown flag: " << flag << std::endl;
+    }
+    return params;
+}
+
+int main(int argc, char* argv[]){
+    SimulationParams params = parseArgs(argc, argv);
+
+    Asset asset(params.S0, params.sigma);
+    Option option(params.K, params.T);
+
+    double closedFormPrice = BlackScholesPrice(asset, params.r, params.K, params.T);
+
+    MonteCarloEngine engine(params.r, params.N);
+    PricingResult monteCarloResult = engine.price(asset, option);
 
     double monteCarloPrice = monteCarloResult.price;
     double monteCarloError = monteCarloResult.standardError;
-    
+
     std::cout << "Closed Form Price " << closedFormPrice << std::endl;
     std::cout << "Monte Carlo Price " << monteCarloPrice << std::endl;
     std::cout << "Monte Carlo Error " << monteCarloError << std::endl;

@@ -30,5 +30,32 @@ Verified against Black-Scholes across a range of strikes (deep ITM to deep OTM) 
 
 ```
 g++ -std=c++17 -O2 MonteCarloOptionPricer.cpp -o pricer
+```
+
+## Usage
+
+Run with no flags to price a European call with the built-in defaults:
+
+```
 ./pricer
 ```
+
+Every parameter can be overridden individually via flags — anything you don't pass keeps its default:
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--spot` | Initial asset price, `S0` | `100` |
+| `--strike` | Option strike, `K` | `100` |
+| `--rate` | Risk-free rate, `r` | `0.05` |
+| `--vol` | Volatility, `sigma` | `0.2` |
+| `--maturity` | Time to maturity in years, `T` | `1` |
+| `--trials` | Number of antithetic pairs simulated | `10000000` |
+
+Examples:
+
+```
+./pricer --strike 110 --vol 0.25
+./pricer --spot 95 --strike 100 --maturity 0.5 --trials 2000000
+```
+
+Notes: an unrecognized flag (e.g. a typo) prints a warning and is ignored rather than stopping the program; a flag with no value after it also warns and stops parsing further arguments.
