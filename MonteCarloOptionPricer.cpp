@@ -3,6 +3,7 @@
 #include <cmath>
 #include <algorithm>
 #include <string>
+#include <vector>
 
 class Asset{ // immutable market data for the underlying
     public: 
@@ -13,12 +14,30 @@ class Asset{ // immutable market data for the underlying
 
 class Option{ // immutable data for contract itself
     public:
-        Option(double K, double T) :K(K),T(T){}
-        double payoff(double terminalPrice) const {
-            return std::max(terminalPrice - K,0.0);
-        }
+        Option(double K, double T, int numSteps) :K(K),T(T),numSteps(numSteps) {}
+        virtual double payoff(const std::vector<double>& path) const = 0;
+        virtual ~Option() = default;
         const double K;
         const double T;
+        const int numSteps;
+};
+
+class EuropeanOption : public Option {
+    public:
+        EuropeanOption(double K, double T): Option(K,T,1) {}
+        double payoff(const std::vector<double>& path) const override {
+            return std::max(path.back() - K, 0.0);
+        }
+};
+
+class AsianOption : public Option{
+    public:
+        AsianOption(double K, double T, int numObservations): Option(K,T,numObservations) {}
+        double payoff(const std::vector<double>& path) const override {
+            double sum = 0.0;
+            for (double s: path) sum += s;
+            return std::max(sum / path.size() - K,0.0);
+        }
 };
 
 struct PricingResult{
@@ -31,18 +50,33 @@ class MonteCarloEngine{ // Simulation Process
     public:
         MonteCarloEngine(double r, int numPairs, unsigned int seed = std::random_device{}()): r(r), numPairs(numPairs), gen(seed){}
         PricingResult price(const Asset& asset, const Option& option) const {
-            std::normal_distribution<double> z_dist(0.0, 1.0);
+
+            double dt = option.T / option.numSteps;
+            double drift = (r - 0.5*asset.sigma*asset.sigma) * dt;
+            double vol = asset.sigma * sqrt(dt);
 
             double sumPairAverage = 0.0;
             double sumPairAverageSquared = 0.0;
 
+            std::normal_distribution<double> z_dist(0.0, 1.0);
+
             for (int i = 0; i < numPairs; i++) {
-                double Z = z_dist(gen);
+                std::vector<double> pathUp, pathDown;
+                pathUp.reserve(option.numSteps);
+                pathDown.reserve(option.numSteps);
 
-                double S_up   = asset.S0 * exp((r - 0.5*asset.sigma*asset.sigma)*option.T + asset.sigma*sqrt(option.T)*Z);
-                double S_down = asset.S0 * exp((r - 0.5*asset.sigma*asset.sigma)*option.T - asset.sigma*sqrt(option.T)*Z);
+                double S_up   = asset.S0;
+                double S_down = asset.S0;
 
-                double pairAverage = (option.payoff(S_up) + option.payoff(S_down)) / 2.0;
+                for (int step = 0; step < option.numSteps; step++){
+                    double Z = z_dist(gen);
+                    S_up *= exp(drift + vol*Z);
+                    S_down *= exp(drift - vol*Z);
+                    pathUp.push_back(S_up);
+                    pathDown.push_back(S_down);
+                }
+
+                double pairAverage = (option.payoff(pathUp) + option.payoff(pathDown)) / 2.0;
                 sumPairAverage += pairAverage;
                 sumPairAverageSquared += pairAverage * pairAverage;
             }
@@ -73,13 +107,15 @@ double BlackScholesPrice(Asset asset, double r, double K, double T){
     return C;
 }
 
-struct SimulationParams {
+struct SimulationParams { // default option parameters
     double S0 = 100;
     double K = 100;
     double r = 0.05;
     double sigma = 0.2;
     double T = 1;
     int N = 10000000;
+    int numObservations = 12;
+
 };
 
 SimulationParams parseArgs(int argc, char* argv[]) {
@@ -98,6 +134,7 @@ SimulationParams parseArgs(int argc, char* argv[]) {
         else if (flag == "--vol")      params.sigma = std::stod(value);
         else if (flag == "--maturity") params.T     = std::stod(value);
         else if (flag == "--trials")   params.N     = std::stoi(value);
+        else if (flag == "--observations") params.numObservations = std::stoi(value);
         else std::cerr << "Unknown flag: " << flag << std::endl;
     }
     return params;
@@ -107,7 +144,7 @@ int main(int argc, char* argv[]){
     SimulationParams params = parseArgs(argc, argv);
 
     Asset asset(params.S0, params.sigma);
-    Option option(params.K, params.T);
+    AsianOption option(params.K, params.T,params.numObservations);
 
     double closedFormPrice = BlackScholesPrice(asset, params.r, params.K, params.T);
 
@@ -117,7 +154,7 @@ int main(int argc, char* argv[]){
     double monteCarloPrice = monteCarloResult.price;
     double monteCarloError = monteCarloResult.standardError;
 
-    std::cout << "Closed Form Price " << closedFormPrice << std::endl;
-    std::cout << "Monte Carlo Price " << monteCarloPrice << std::endl;
+    std::cout << "Closed Form Price (European Call) " << closedFormPrice << std::endl;
+    std::cout << "Monte Carlo Price (Asial Call) " << monteCarloPrice << std::endl;
     std::cout << "Monte Carlo Error " << monteCarloError << std::endl;
 }
