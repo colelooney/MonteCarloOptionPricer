@@ -4,40 +4,72 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <memory>
 
 class Asset{ // immutable market data for the underlying
-    public: 
+    public:
         Asset(double S0,double sigma):S0(S0),sigma(sigma){}
         const double S0;
         const double sigma;
 };
 
+enum class putCall{put, call};
+
 class Option{ // immutable data for contract itself
     public:
-        Option(double K, double T, int numSteps) :K(K),T(T),numSteps(numSteps) {}
+        Option(double K, double T, int numSteps, putCall mode = putCall::call)
+            :K(K),T(T),numSteps(numSteps), mode(mode) {}
         virtual double payoff(const std::vector<double>& path) const = 0;
         virtual ~Option() = default;
         const double K;
         const double T;
         const int numSteps;
+        const putCall mode;
 };
 
 class EuropeanOption : public Option {
     public:
-        EuropeanOption(double K, double T): Option(K,T,1) {}
+        EuropeanOption(double K, double T, putCall mode): Option(K,T,1,mode) {}
         double payoff(const std::vector<double>& path) const override {
-            return std::max(path.back() - K, 0.0);
+            if (mode == putCall::call) return std::max(path.back() - K, 0.0);
+            else return std::max(K - path.back(), 0.0);
         }
 };
 
 class AsianOption : public Option{
     public:
-        AsianOption(double K, double T, int numObservations): Option(K,T,numObservations) {}
+        AsianOption(double K, double T, int numObservations, putCall mode): Option(K,T,numObservations,mode) {}
         double payoff(const std::vector<double>& path) const override {
             double sum = 0.0;
             for (double s: path) sum += s;
-            return std::max(sum / path.size() - K,0.0);
+            double average = sum / path.size();
+            if (mode == putCall::call) return std::max(average - K, 0.0);
+            else return std::max(K - average, 0.0);
         }
+};
+
+enum class Direction { Up, Down };
+enum class Activation { KnockIn, KnockOut };
+class BarrierOption : public Option{
+    public:
+        BarrierOption(double K, double T, double H, Direction direction, Activation activation, int numObservations, putCall mode)
+        : Option(K, T, numObservations, mode), H(H), direction(direction), activation(activation) {}
+        double payoff(const std::vector<double>& path) const override{
+            bool breached = false;
+            for (double s: path){
+                if (direction == Direction::Up   && s >= H) breached = true;
+                if (direction == Direction::Down && s <= H) breached = true;
+            }
+            bool active = (activation == Activation::KnockIn) ? breached : !breached;
+            double vanillaPayoff = (mode == putCall::call)
+                ? std::max(path.back() - K, 0.0)
+                : std::max(K - path.back(), 0.0);
+            return active ? vanillaPayoff : 0.0;
+        }
+    private:
+        double H;
+        Direction direction;
+        Activation activation;
 };
 
 struct PricingResult{
@@ -114,8 +146,12 @@ struct SimulationParams { // default option parameters
     double sigma = 0.2;
     double T = 1;
     int N = 10000000;
+    std::string optionType = "european";
+    std::string side = "call";
     int numObservations = 12;
-
+    double H = 80;
+    std::string direction = "down";
+    std::string activation = "out";
 };
 
 SimulationParams parseArgs(int argc, char* argv[]) {
@@ -134,27 +170,65 @@ SimulationParams parseArgs(int argc, char* argv[]) {
         else if (flag == "--vol")      params.sigma = std::stod(value);
         else if (flag == "--maturity") params.T     = std::stod(value);
         else if (flag == "--trials")   params.N     = std::stoi(value);
+        else if (flag == "--type")     params.optionType = value;
+        else if (flag == "--side")     params.side  = value;
         else if (flag == "--observations") params.numObservations = std::stoi(value);
+        else if (flag == "--barrier")    params.H = std::stod(value);
+        else if (flag == "--direction")  params.direction = value;
+        else if (flag == "--activation") params.activation = value;
         else std::cerr << "Unknown flag: " << flag << std::endl;
     }
     return params;
+}
+
+void verifyPutCallParity(const Asset& asset, double r, double K, double T, int N){
+    MonteCarloEngine engine(r, N);
+    EuropeanOption call(K, T, putCall::call);
+    EuropeanOption put(K, T, putCall::put);
+
+    PricingResult callResult = engine.price(asset, call);
+    PricingResult putResult  = engine.price(asset, put);
+
+    double lhs = callResult.price - putResult.price;
+    double rhs = asset.S0 - K * exp(-r*T);
+    double lhsError = sqrt(callResult.standardError*callResult.standardError
+                          + putResult.standardError*putResult.standardError);
+    double diff = std::abs(lhs - rhs);
+
+    std::cout << "\n--- Put-call parity check (European, K=" << K << ", T=" << T << ") ---" << std::endl;
+    std::cout << "Call price:        " << callResult.price << " +/- " << callResult.standardError << std::endl;
+    std::cout << "Put price:         " << putResult.price  << " +/- " << putResult.standardError  << std::endl;
+    std::cout << "C - P (simulated): " << lhs << " +/- " << lhsError << std::endl;
+    std::cout << "S0 - K*e^(-rT):    " << rhs << std::endl;
+    std::cout << "Difference:        " << diff << " (" << diff / lhsError << " combined std errors)" << std::endl;
+    std::cout << (diff <= 3 * lhsError ? "PASS - within 3 standard errors" : "FAIL - outside 3 standard errors, investigate") << std::endl;
 }
 
 int main(int argc, char* argv[]){
     SimulationParams params = parseArgs(argc, argv);
 
     Asset asset(params.S0, params.sigma);
-    AsianOption option(params.K, params.T,params.numObservations);
+    putCall side = (params.side == "put") ? putCall::put : putCall::call;
+
+    std::unique_ptr<Option> option;
+    if (params.optionType == "asian"){
+        option = std::make_unique<AsianOption>(params.K, params.T, params.numObservations, side);
+    } else if(params.optionType == "barrier"){
+        Direction dir = (params.direction == "up") ? Direction::Up : Direction::Down;
+        Activation act = (params.activation == "in") ? Activation::KnockIn : Activation::KnockOut;
+        option = std::make_unique<BarrierOption>(params.K, params.T, params.H, dir, act, params.numObservations, side);
+    } else {
+        option = std::make_unique<EuropeanOption>(params.K, params.T, side);
+    }
 
     double closedFormPrice = BlackScholesPrice(asset, params.r, params.K, params.T);
 
     MonteCarloEngine engine(params.r, params.N);
-    PricingResult monteCarloResult = engine.price(asset, option);
-
-    double monteCarloPrice = monteCarloResult.price;
-    double monteCarloError = monteCarloResult.standardError;
+    PricingResult monteCarloResult = engine.price(asset, *option);
 
     std::cout << "Closed Form Price (European Call) " << closedFormPrice << std::endl;
-    std::cout << "Monte Carlo Price (Asial Call) " << monteCarloPrice << std::endl;
-    std::cout << "Monte Carlo Error " << monteCarloError << std::endl;
+    std::cout << "Monte Carlo Price " << params.optionType << " " << params.side << " " << monteCarloResult.price << std::endl;
+    std::cout << "Monte Carlo Error " << monteCarloResult.standardError << std::endl;
+
+    verifyPutCallParity(asset, params.r, params.K, params.T, params.N);
 }
