@@ -88,18 +88,22 @@ struct RiskResult{
 
 class MonteCarloEngine{ // Simulation Process
     public:
-        MonteCarloEngine(double r, int numPairs, unsigned int seed = std::random_device{}()): r(r), numPairs(numPairs), gen(seed){}
+        MonteCarloEngine(double r, int numPairs,double jumpIntensity,double jumpMean, double jumpVol, unsigned int seed = std::random_device{}()):
+         r(r), numPairs(numPairs),jumpIntensity(jumpIntensity),jumpMean(jumpMean),jumpVol(jumpVol), gen(seed){}
         std::tuple<PricingResult,RiskResult> price(const Asset& asset, const Option& option) const {
 
             double dt = option.T / option.numSteps;
-            double drift = (r - 0.5*asset.sigma*asset.sigma) * dt;
             double vol = asset.sigma * sqrt(dt);
             double confidence = 0.95;
+            double jumpCompensator = exp(jumpMean + 0.5*jumpVol*jumpVol) - 1.0;
+            double drift = (r - 0.5*asset.sigma*asset.sigma - jumpIntensity*jumpCompensator) * dt;
 
             double sumPairAverage = 0.0;
             double sumPairAverageSquared = 0.0;
 
             std::normal_distribution<double> z_dist(0.0, 1.0);
+            double poissonMean = (jumpIntensity > 0.0) ? jumpIntensity * dt : 1.0;
+            std::poisson_distribution<int> n_dist(poissonMean);
             std::vector<double> payoffs;
             std::vector<double> pAndL;
             payoffs.reserve(2 * numPairs);
@@ -114,8 +118,17 @@ class MonteCarloEngine{ // Simulation Process
 
                 for (int step = 0; step < option.numSteps; step++){
                     double Z = z_dist(gen);
-                    S_up *= exp(drift + vol*Z);
-                    S_down *= exp(drift - vol*Z);
+                    int n = 0;
+                    if (jumpIntensity > 0.0){
+                        n = n_dist(gen);
+                    }
+                    double jumpSum = 0.0;
+                    if (n>0){
+                        double Zj = z_dist(gen);
+                        jumpSum = n*jumpMean + sqrt(n)*jumpVol*Zj;
+                    }
+                    S_up *= exp(drift + vol*Z + jumpSum);
+                    S_down *= exp(drift - vol*Z + jumpSum);
                     pathUp.push_back(S_up);
                     pathDown.push_back(S_down);
                 }
@@ -156,6 +169,9 @@ class MonteCarloEngine{ // Simulation Process
     private:
         double r;
         int numPairs;
+        double jumpIntensity;
+        double jumpMean;
+        double jumpVol;
         mutable std::mt19937_64 gen;
 
         double discountFactor(double T) const {return exp(-r*T);}
@@ -181,6 +197,9 @@ struct SimulationParams { // default option parameters
     double H = 80;
     std::string direction = "down";
     std::string activation = "out";
+    double jumpIntensity = 0;
+    double jumpMean = 0;
+    double jumpVol = 0;
 };
 
 SimulationParams parseArgs(int argc, char* argv[]) {
@@ -205,13 +224,16 @@ SimulationParams parseArgs(int argc, char* argv[]) {
         else if (flag == "--barrier")    params.H = std::stod(value);
         else if (flag == "--direction")  params.direction = value;
         else if (flag == "--activation") params.activation = value;
+        else if (flag == "--jump-intensity") params.jumpIntensity = std::stod(value);
+        else if (flag == "--jump-mean") params.jumpMean = std::stod(value);
+        else if (flag == "--jump-vol") params.jumpVol = std::stod(value);
         else std::cerr << "Unknown flag: " << flag << std::endl;
     }
     return params;
 }
 
-void verifyPutCallParity(const Asset& asset, double r, double K, double T, int N){
-    MonteCarloEngine engine(r, N);
+void verifyPutCallParity(const Asset& asset, double r, double K, double T, int N,double jumpIntensity,double jumpMean,double jumpVol){
+    MonteCarloEngine engine(r, N,jumpIntensity,jumpMean,jumpVol);
     EuropeanOption call(K, T, putCall::call);
     EuropeanOption put(K, T, putCall::put);
 
@@ -253,7 +275,7 @@ int main(int argc, char* argv[]){
 
     double closedFormPrice = BlackScholesPrice(asset, params.r, params.K, params.T);
 
-    MonteCarloEngine engine(params.r, params.N);
+    MonteCarloEngine engine(params.r, params.N,params.jumpIntensity,params.jumpMean,params.jumpVol);
     auto [monteCarloResult, riskResult] = engine.price(asset, *option);
 
     std::cout << "Closed Form Price (European Call) " << closedFormPrice << std::endl;
@@ -262,5 +284,5 @@ int main(int argc, char* argv[]){
     std::cout << "VaR (95%): " << riskResult.var << std::endl;
     std::cout << "CVaR (95%): " << riskResult.cvar << std::endl;
 
-    verifyPutCallParity(asset, params.r, params.K, params.T, params.N);
+    verifyPutCallParity(asset, params.r, params.K, params.T, params.N,params.jumpIntensity,params.jumpMean,params.jumpVol);
 }
