@@ -22,13 +22,17 @@ A C++ Monte Carlo option pricer built in stages, as a self-directed project appl
 
 Verification for this stage combines several approaches, since not every option type has a closed form to check against: European against Black-Scholes across a range of strikes; Asian cross-checked against an independent from-scratch reimplementation and against its own reduction to the European case (`numObservations = 1`); barrier options checked via in-out parity (knock-in + knock-out price ≈ the equivalent vanilla price); and put-call parity (`C - P = S0 - K·e^(-rT)`) is now run automatically at the end of every program execution, regardless of which option was priced, as a standing correctness check.
 
+**Stage 4 - Tail Risk / Pricing and Metric Extension:** The model now supports the Merton Jump-Diffusion pricing model to include sudden discontinuous jumps in the underlying. Setting jump diffusion parameters to zero will reduce the pricing model back to the GBM pricing model. Additionally, VaR and CVaR metrics were implemented to determine the effect of tail risk. In the current state, these values will return the price of the option however in **Stage 5**, portfolio construction and shorting will allow for more interesting results.
+
 ## Next Steps
 
-**Stage 4 - Tail risk / Pricing and Metric Extension:** Replace GBM with jump-diffusion (Merton model). Compute VaR and CVaR / Expected Shortfall from the simulated payoff distribution. Extend the barrier structure toward a full autocallable (multiple observation dates, an early-redemption trigger, a downside knock-in at maturity). Optionally calibrate to a real index.
+**Stage 5 - Portfolio Generation:** Extend simulation to allow for option portfolio construction and shorting.
 
-**Stage 5 - Performance:** Profile the simulation loop; apply move semantics and cache-friendly data layout; avoid unnecessary per-trial copies (each pair currently allocates two path vectors).
+**Stage 6 - Performance:** Profile the simulation loop; apply move semantics and cache-friendly data layout; avoid unnecessary per-trial copies (each pair currently allocates two path vectors).
 
-**Combined target:** an autocallable-style barrier option pricer with jump-diffusion and Expected Shortfall reporting.
+## Future Options
+- Calibrate to real indices
+- autocallable options 
 
 ## Build
 
@@ -60,6 +64,9 @@ Every parameter can be overridden individually via flags — anything you don't 
 | `--barrier` | Barrier level `H` (barrier options only) | `80` |
 | `--direction` | `up` or `down` (barrier options only) | `down` |
 | `--activation` | `in` (knock-in) or `out` (knock-out) (barrier options only) | `out` |
+| `--jump-intensity` | Jump Intensity, `jumpIntensity` | `0.0` |
+| `--jump-mean` | Jump Mean, `jumpMean` | `0.0` |
+| `--jump-vol` | Jump Volatility, `jumpVol` | `0.0` |
 
 Examples:
 
