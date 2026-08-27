@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <numeric>
+#include <tuple>
 
 class Asset{ // immutable market data for the underlying
     public:
@@ -78,20 +80,30 @@ struct PricingResult{
     double standardError;
 };
 
+struct RiskResult{
+    RiskResult(double var, double cvar): var(var),cvar(cvar){}
+    double var;
+    double cvar;
+};
+
 class MonteCarloEngine{ // Simulation Process
     public:
         MonteCarloEngine(double r, int numPairs, unsigned int seed = std::random_device{}()): r(r), numPairs(numPairs), gen(seed){}
-        PricingResult price(const Asset& asset, const Option& option) const {
+        std::tuple<PricingResult,RiskResult> price(const Asset& asset, const Option& option) const {
 
             double dt = option.T / option.numSteps;
             double drift = (r - 0.5*asset.sigma*asset.sigma) * dt;
             double vol = asset.sigma * sqrt(dt);
+            double confidence = 0.95;
 
             double sumPairAverage = 0.0;
             double sumPairAverageSquared = 0.0;
 
             std::normal_distribution<double> z_dist(0.0, 1.0);
-
+            std::vector<double> payoffs;
+            std::vector<double> pAndL;
+            payoffs.reserve(2 * numPairs);
+            pAndL.reserve(2 * numPairs);
             for (int i = 0; i < numPairs; i++) {
                 std::vector<double> pathUp, pathDown;
                 pathUp.reserve(option.numSteps);
@@ -107,8 +119,11 @@ class MonteCarloEngine{ // Simulation Process
                     pathUp.push_back(S_up);
                     pathDown.push_back(S_down);
                 }
-
-                double pairAverage = (option.payoff(pathUp) + option.payoff(pathDown)) / 2.0;
+                double upPayoff = option.payoff(pathUp);
+                double downPayoff = option.payoff(pathDown);
+                double pairAverage = (upPayoff + downPayoff) / 2.0;
+                payoffs.push_back(upPayoff);
+                payoffs.push_back(downPayoff);
                 sumPairAverage += pairAverage;
                 sumPairAverageSquared += pairAverage * pairAverage;
             }
@@ -121,7 +136,21 @@ class MonteCarloEngine{ // Simulation Process
             double price = meanPairAverage * discount;
             double standardError = sqrt(payoffVariance / numPairs) * discount;
 
-            return PricingResult(price, standardError);
+            for (double payoff : payoffs) {
+                pAndL.push_back(discount * payoff - price);
+            }
+
+            // clear payoffs from memory
+            payoffs.clear();
+            payoffs.shrink_to_fit();
+
+            size_t k = static_cast<size_t>((1.0-confidence)*pAndL.size());
+            std::nth_element(pAndL.begin(),pAndL.begin()+k,pAndL.end());
+
+            double tailSum = std::accumulate(pAndL.begin(),pAndL.begin()+k,0.0);
+            double cvar = -(tailSum/k);
+
+            return {PricingResult(price, standardError), RiskResult(-pAndL[k],cvar)};
         }
 
     private:
@@ -186,8 +215,9 @@ void verifyPutCallParity(const Asset& asset, double r, double K, double T, int N
     EuropeanOption call(K, T, putCall::call);
     EuropeanOption put(K, T, putCall::put);
 
-    PricingResult callResult = engine.price(asset, call);
-    PricingResult putResult  = engine.price(asset, put);
+
+    auto [callResult, callRisk] = engine.price(asset, call);
+    auto [putResult, putRisk]   = engine.price(asset, put);
 
     double lhs = callResult.price - putResult.price;
     double rhs = asset.S0 - K * exp(-r*T);
@@ -224,11 +254,13 @@ int main(int argc, char* argv[]){
     double closedFormPrice = BlackScholesPrice(asset, params.r, params.K, params.T);
 
     MonteCarloEngine engine(params.r, params.N);
-    PricingResult monteCarloResult = engine.price(asset, *option);
+    auto [monteCarloResult, riskResult] = engine.price(asset, *option);
 
     std::cout << "Closed Form Price (European Call) " << closedFormPrice << std::endl;
     std::cout << "Monte Carlo Price " << params.optionType << " " << params.side << " " << monteCarloResult.price << std::endl;
     std::cout << "Monte Carlo Error " << monteCarloResult.standardError << std::endl;
+    std::cout << "VaR (95%): " << riskResult.var << std::endl;
+    std::cout << "CVaR (95%): " << riskResult.cvar << std::endl;
 
     verifyPutCallParity(asset, params.r, params.K, params.T, params.N);
 }
