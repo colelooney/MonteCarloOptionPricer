@@ -29,6 +29,12 @@ class Option{ // immutable data for contract itself
         const putCall mode;
 };
 
+struct Position {
+    Position(const Option& option, double quantity): option(option),quantity(quantity){}
+    const Option& option;
+    double quantity; //positive = long, negative = short
+};
+
 class EuropeanOption : public Option {
     public:
         EuropeanOption(double K, double T, putCall mode): Option(K,T,1,mode) {}
@@ -85,6 +91,31 @@ struct RiskResult{
     double var;
     double cvar;
 };
+
+class Portfolio : public Option{
+    public:
+        Portfolio(std::vector<Position> positions)
+            : Option(0.0,positions.front().option.T,positions.front().option.numSteps),
+            positions(std::move(positions))
+        {
+            for (const auto& pos: this -> positions) {
+                if (pos.option.T != T || pos.option.numSteps != numSteps){
+                    throw std::invalid_argument("Portfolio positions must share maturity and observation count");
+                }
+            }
+        }
+
+        double payoff(const std::vector<double>& path) const override{
+            double total = 0.0;
+            for (const auto& pos: positions){
+                total += pos.quantity * pos.option.payoff(path);
+            }
+            return total;
+        }
+    private:
+        std::vector<Position> positions;
+};
+
 
 class MonteCarloEngine{ // Simulation Process
     public:
@@ -200,6 +231,8 @@ struct SimulationParams { // default option parameters
     double jumpIntensity = 0;
     double jumpMean = 0;
     double jumpVol = 0;
+    std::string portfolioName = "spread";
+    double K2 = 110;
 };
 
 SimulationParams parseArgs(int argc, char* argv[]) {
@@ -227,6 +260,8 @@ SimulationParams parseArgs(int argc, char* argv[]) {
         else if (flag == "--jump-intensity") params.jumpIntensity = std::stod(value);
         else if (flag == "--jump-mean") params.jumpMean = std::stod(value);
         else if (flag == "--jump-vol") params.jumpVol = std::stod(value);
+        else if (flag == "--portfolio") params.portfolioName = value;
+        else if (flag == "--strike2")   params.K2 = std::stod(value);
         else std::cerr << "Unknown flag: " << flag << std::endl;
     }
     return params;
@@ -258,8 +293,35 @@ void verifyPutCallParity(const Asset& asset, double r, double K, double T, int N
 
 int main(int argc, char* argv[]){
     SimulationParams params = parseArgs(argc, argv);
-
+    MonteCarloEngine engine(params.r, params.N,params.jumpIntensity,params.jumpMean,params.jumpVol);
     Asset asset(params.S0, params.sigma);
+
+    if (params.optionType == "portfolio") {
+        if (params.portfolioName == "spread") {
+            EuropeanOption longCall(params.K, params.T, putCall::call);
+            EuropeanOption shortCall(params.K2, params.T, putCall::call);
+            Portfolio portfolio({ Position(longCall, 1.0), Position(shortCall, -1.0) });
+
+            auto [result, risk] = engine.price(asset, portfolio);
+            std::cout << "Portfolio (bull call spread) price " << result.price << " +/- " << result.standardError << std::endl;
+            std::cout << "VaR (95%): " << risk.var << std::endl;
+            std::cout << "CVaR (95%): " << risk.cvar << std::endl;
+
+        } else if (params.portfolioName == "netzero") {
+            EuropeanOption call(params.K, params.T, putCall::call);
+            Portfolio portfolio({ Position(call, 1.0), Position(call, -1.0) });
+
+            auto [result, risk] = engine.price(asset, portfolio);
+            std::cout << "Portfolio (net-zero check) price " << result.price << " +/- " << result.standardError << std::endl;
+            std::cout << "VaR (95%): " << risk.var << std::endl;
+            std::cout << "CVaR (95%): " << risk.cvar << std::endl;
+
+        } else {
+            std::cerr << "Unknown portfolio: " << params.portfolioName << std::endl;
+        }
+        return 0;
+    }
+
     putCall side = (params.side == "put") ? putCall::put : putCall::call;
 
     std::unique_ptr<Option> option;
@@ -275,7 +337,6 @@ int main(int argc, char* argv[]){
 
     double closedFormPrice = BlackScholesPrice(asset, params.r, params.K, params.T);
 
-    MonteCarloEngine engine(params.r, params.N,params.jumpIntensity,params.jumpMean,params.jumpVol);
     auto [monteCarloResult, riskResult] = engine.price(asset, *option);
 
     std::cout << "Closed Form Price (European Call) " << closedFormPrice << std::endl;
