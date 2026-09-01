@@ -233,6 +233,7 @@ struct SimulationParams { // default option parameters
     double jumpVol = 0;
     std::string portfolioName = "spread";
     double K2 = 110;
+    int quantity = 1;
 };
 
 SimulationParams parseArgs(int argc, char* argv[]) {
@@ -262,6 +263,7 @@ SimulationParams parseArgs(int argc, char* argv[]) {
         else if (flag == "--jump-vol") params.jumpVol = std::stod(value);
         else if (flag == "--portfolio") params.portfolioName = value;
         else if (flag == "--strike2")   params.K2 = std::stod(value);
+        else if (flag == "--quantity") params.quantity = std::stod(value);
         else std::cerr << "Unknown flag: " << flag << std::endl;
     }
     return params;
